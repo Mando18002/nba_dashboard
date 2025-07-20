@@ -86,7 +86,7 @@ update_nba_seasons = BigQueryInsertJobOperator(
     task_id='update_nba_seasons',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_raw.update_nba_seasons`()',
+            'query': 'CALL `update_seasons`()',
             'useLegacySql': False,
         }
     },
@@ -107,7 +107,7 @@ wap_part_1_write = BigQueryInsertJobOperator(
     task_id='wap_part_1_write_and_clean',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_staging.pushing_raw_data_to_staging`()',
+            'query': 'CALL `pushing_raw_data_to_staging`()',
             'useLegacySql': False,
         }
     },
@@ -126,7 +126,7 @@ audit_shooting_logic = BigQueryCheckOperator(
     task_id='audit_shooting_logic',
     sql="""
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-    FROM `nba-analytics-458520.nba_data_staging.staging_area`
+    FROM `staging_area`
     WHERE fieldGoalsMade > fieldGoalsAttempted
        OR threePointersMade > threePointersAttempted  
        OR freeThrowsMade > freeThrowsAttempted
@@ -141,7 +141,7 @@ audit_minutes_range = BigQueryCheckOperator(
     task_id='audit_minutes_range',
     sql="""
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-    FROM `nba-analytics-458520.nba_data_staging.staging_area`
+    FROM `staging_area`
     WHERE minutes < 0 OR minutes > 65
     """,
     use_legacy_sql=False,
@@ -154,7 +154,7 @@ audit_percentages = BigQueryCheckOperator(
     task_id='audit_percentages',
     sql="""
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-    FROM `nba-analytics-458520.nba_data_staging.staging_area`
+    FROM `staging_area`
     WHERE fieldGoalsPercentage < 0 OR fieldGoalsPercentage > 1
        OR threePointersPercentage < 0 OR threePointersPercentage > 1
        OR freeThrowsPercentage < 0 OR freeThrowsPercentage > 1
@@ -169,7 +169,7 @@ audit_rebound_logic = BigQueryCheckOperator(
     task_id='audit_rebound_logic',
     sql="""
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-    FROM `nba-analytics-458520.nba_data_staging.staging_area`
+    FROM `staging_area`
     WHERE reboundsTotal != (reboundsOffensive + reboundsDefensive)
     """,
     use_legacy_sql=False,
@@ -182,7 +182,7 @@ audit_negative_stats = BigQueryCheckOperator(
     task_id='audit_negative_stats',
     sql="""
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-    FROM `nba-analytics-458520.nba_data_staging.staging_area`
+    FROM `staging_area`
     WHERE fieldGoalsMade < 0 OR fieldGoalsAttempted < 0
        OR threePointersMade < 0 OR threePointersAttempted < 0
        OR freeThrowsMade < 0 OR freeThrowsAttempted < 0
@@ -200,7 +200,7 @@ audit_required_fields = BigQueryCheckOperator(
     task_id='audit_required_fields',
     sql="""
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-    FROM `nba-analytics-458520.nba_data_staging.staging_area`
+    FROM `staging_area`
     WHERE personId IS NULL 
        OR game_id IS NULL 
        OR game_date IS NULL
@@ -219,7 +219,7 @@ audit_player_uniqueness = BigQueryCheckOperator(
     SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
     FROM (
         SELECT personId, game_id, COUNT(*) as record_count
-        FROM `nba-analytics-458520.nba_data_staging.staging_area`
+        FROM `staging_area`
         GROUP BY personId, game_id
         HAVING COUNT(*) > 1
     )
@@ -236,7 +236,7 @@ wap_part_3_publish = BigQueryInsertJobOperator(
     task_id='wap_part_3_publish_to_production',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_staging.push_data_to_production`()',
+            'query': 'CALL `push_data_to_production`()',
             'useLegacySql': False,
         }
     },
@@ -250,7 +250,7 @@ update_player_reference_table = BigQueryInsertJobOperator(
     task_id='update_player_reference_table',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.upadte_player_reference_table`()',
+            'query': 'CALL `upadte_player_reference_table`()',
             'useLegacySql': False,
         }
     },
@@ -267,7 +267,7 @@ update_combined_player_analysis = BigQueryInsertJobOperator(
     task_id='update_combined_player_analysis',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.update_combined_player_analysis`()',
+            'query': 'CALL `update_combined_player_analysis`()',
             'useLegacySql': False,
         }
     },
@@ -280,7 +280,7 @@ update_fantasy_points_leaders = BigQueryInsertJobOperator(
     task_id='update_fantasy_points_leaders',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.update_fantasy_points_leaders`()',
+            'query': 'CALL `update_fantasy_points_leaders`()',
             'useLegacySql': False,
         }
     },
@@ -293,7 +293,7 @@ update_player_profile_data = BigQueryInsertJobOperator(
     task_id='update_player_profile_data',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.update_player_profile_data`()',
+            'query': 'CALL `update_player_profile_data`()',
             'useLegacySql': False,
         }
     },
@@ -306,7 +306,7 @@ update_player_trend_analysis = BigQueryInsertJobOperator(
     task_id='update_player_trend_analysis',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.update_player_trend_analysis`()',
+            'query': 'CALL `update_player_trend_analysis`()',
             'useLegacySql': False,
         }
     },
@@ -319,7 +319,7 @@ update_player_zscore_analysis = BigQueryInsertJobOperator(
     task_id='update_player_zscore_analysis',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.update_player_zscore_analysis`()',
+            'query': 'CALL `update_player_zscore_analysis`()',
             'useLegacySql': False,
         }
     },
@@ -332,7 +332,7 @@ update_top15_fantasy_boxplot = BigQueryInsertJobOperator(
     task_id='update_top15_fantasy_boxplot',
     configuration={
         'query': {
-            'query': 'CALL `nba-analytics-458520.nba_data_business_level_aggregates.update_top15_fantasy_boxplot`()',
+            'query': 'CALL `update_top15_fantasy_boxplot`()',
             'useLegacySql': False,
         }
     },
