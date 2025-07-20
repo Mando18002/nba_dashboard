@@ -1,0 +1,7 @@
+# .gitignore for NBA Analytics Project
+
+# This file is currently empty because:
+# 1. All credentials are stored in Google Cloud Run environment variables (not in files)
+# 2. No sensitive config files exist in this codebase
+# 3. No auto-generated files (like __pycache__/) exist yet
+# 4. All data processing happens in the cloud (GCS/BigQuery) - no local data files
