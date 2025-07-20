@@ -7,9 +7,9 @@ from google.auth.transport.requests import AuthorizedSession
 from datetime import datetime, timedelta
 
 # Bronze layer endpoints (same as your existing DAG)
-BRONZE_LAYER_1_URL = "https://us-central1-nba-analytics-458520.cloudfunctions.net/bronze-layer-1"
-BRONZE_LAYER_2_URL = "https://us-central1-nba-analytics-458520.cloudfunctions.net/bronze-layer-2"
-SILVER_LAYER_1_URL = "https://us-central1-nba-analytics-458520.cloudfunctions.net/silver-layer-1"
+BRONZE_LAYER_1_URL = "CLOUD_FUNCTION_URL_1"
+BRONZE_LAYER_2_URL = "CLOUD_FUNCTION_URL_2"
+SILVER_LAYER_1_URL = "CLOUD_FUNCTION_URL_3"
 
 # Same functions as your existing DAG - no changes needed here
 def invoke_bronze_layer_1():
