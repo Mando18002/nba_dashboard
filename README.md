@@ -1,15 +1,20 @@
 # NBA Analytics Pipeline
 *Using Data Analysis and Cloud Computing to Better Pick NBA Players For NBA Fantasy*
 
-[![Google Cloud](https://img.shields.io/badge/Google%20Cloud-4285F4?style=flat&logo=google-cloud&logoColor=white)](https://cloud.google.com/)
-[![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)](https://python.org/)
-[![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-017CEE?style=flat&logo=apache-airflow&logoColor=white)](https://airflow.apache.org/)
-[![BigQuery](https://img.shields.io/badge/BigQuery-4285F4?style=flat&logo=google-cloud&logoColor=white)](https://cloud.google.com/bigquery)
+Links: 
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/eric-hoang-5a6934329/)
 [![Power BI](https://img.shields.io/badge/Power%20BI-F2C811?style=flat&logo=power-bi&logoColor=black)](https://powerbi.microsoft.com/)
+
+Tech stack: 
+![Google Cloud](https://img.shields.io/badge/Google%20Cloud-4285F4?style=flat&logo=google-cloud&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
+![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-017CEE?style=flat&logo=apache-airflow&logoColor=white)
+![BigQuery](https://img.shields.io/badge/BigQuery-4285F4?style=flat&logo=google-cloud&logoColor=white)
+![Power BI](https://img.shields.io/badge/Power%20BI-F2C811?style=flat&logo=power-bi&logoColor=black)
 
 <div align="center">
 
-*insert complete data pipeline architecture image here*
+![Pipeline Architecture](images/readme_dia.gif)
 
 **Result: Ranked 33rd out of all fantasy players in Canada this season**
 
@@ -33,11 +38,11 @@ This layer is responsible for extracting raw data from the NBA API and storing i
 
 I chose to save the responses from the API in the Parquet format since it is fundamentally more efficient than other file formats such as CSVs. Due to its columnar storage design, similar data types can be compressed together, resulting in better compression. In an industry-grade environment where large amounts of data are stored in cloud servers that charge you based on size, the benefits of Parquet files result in lower costs as data grows.
 
-*insert row-based formats vs parquet files comparison image here*
+![Parquet vs Row-Based Formats](images/parquet_vs_row_based_formats.png)
 
 As for data organization, I partitioned the data to organize the files into a year/month/day structure, which serves two main purposes in my pipeline. First, it provides clear data organization, as I can easily locate and access specific dates without having to go through massive amounts of files. Second, it enables me to do incremental loading, which is more efficient.
 
-*insert partitioned data files in google cloud storage image here*
+![Folder Structure](images/folder_struc.png)
 
 ### Silver Layer Breakdown
 
@@ -47,9 +52,9 @@ The silver layer takes the raw data I retrieved in the Bronze layer, and transfo
 
 I used joblib, a Python library that provides tools for parallel computing, to process data more efficiently. My initial version of this script processed games sequentially, which worked fine when there weren't many games played that day. However, on days with up to 10 games being played, the pipeline became noticeably slower.
 
-*insert comparison between sequential and parallel processing image here*
+![Sequential vs Parallel Processing](images/parallel_sequential.png)
 
-The way parallel processing works, is it essentially executes multiple tasks simultaneously across multiple CPU cores. So instead of processing NBA games one after another, parallel processing allows me to process multiple games at the same time. This greatly reduces the total time it takes to process games.
+The way parallel processing works, is it essentially executes multiple tasks simultaneously across multiple CPU cores. So instead of processing NBA games one after another, parallel processing allows me to process multiple games at the same time. This greatly reduces the total time it takes to process games. If I were to work with larger datasets with massive amounts of data, I would shift from using joblib to Apache Spark. This tool uses a distributed network of computers to run tasks in parallel, rather than my current setup that utilizes multiple cores on a single machine. This becomes increasingly important as data scales to enterprise levels, where optimization becomes critical for both data processing efficiency and reducing cloud computing costs.
 
 ```python
 def process_yesterdays_games(self):
@@ -77,7 +82,7 @@ The main principle I tried to implement is ensuring the query atomic. Atomic ope
 
 While there's a good chance that the NBA data I'm collecting is going to be accurate, I can't assume that it's going to be all the time, so I applied concepts used in enterprise-level systems to ensure the data I collect is in fact good data. Before any data reaches my final tables, I implement a Write-Audit-Publish (WAP) process to ensure data quality and reliability.
 
-*insert how data flows from raw to staging to production datasets image here*
+![WAP Data Flow](images/wap_dia.gif)
 
 <div align="center">
 
@@ -109,7 +114,7 @@ If any of these audits fail, the pipeline stops immediately and the bad data get
 
 Just like the name, orchestration refers to the automated coordination and management of tasks within the data pipeline, just like a conductor orchestrating a band. So instead of manually starting tasks one by one, orchestration automatically manages when tasks start, wait for dependencies to complete, and restart failed tasks. For my orchestration, I chose to create a DAG using Google Cloud Composer, which is Google's managed version of Apache Airflow.
 
-*insert complete DAG graph image here*
+![DAG Workflow](images/dag.png)
 
 My DAG manages my pipeline by organizing tasks into two main phases. The first phase runs tasks one after another in a specific sequence collecting scoreboard data, collecting boxscore data, updating season information, cleaning the data, then executing the WAP process which validates data quality through seven automated checks before allowing it to reach production tables. The second phase allows six different analysis tables to be created simultaneously once the reference table is ready, including player profiles, fantasy statistics, and performance analysis.
 
@@ -119,18 +124,17 @@ In terms of creating the analytics dashboard, I opted to use Power BI as my visu
 
 ### Dashboard Page 1 - Individual Player Profiles
 
-*insert player profile dashboard image here*
+![Individual Player Profile Dashboard](images/page_1_dash.png)
 
 The main purpose of this page is to quickly give users a comprehensive snapshot of any player they are interested in, with slicers near the top that allow users to select specific seasons and players. In terms of layout design, I wanted to organize the information in order of importance for decision-making, starting with six key performance KPIs that immediately tell you roughly how well the player is performing. Below that, I included shooting percentage gauges that provide a quick visual check of how well they shoot across different areas. Finally, I added a game-by-game stats table that shows recent game history for those who want a deeper look.
 
 ### Dashboard Page 2 - Performance Heat Map
 
-*insert left side of heat-map image here*
-*insert right side of heat-map image here*
+![Performance Heat Map Dashboard](images/page_2_dash.png)
 
 Moving on to the second page, the purpose of this heat map is to provide users with a comprehensive, statistically-driven player comparison tool for fantasy basketball. To better illustrate the use of this tool, let's use Nikola Jokic's rebounding performance as an example. His rebounding cell appears dark green, which means he performs more than two standard deviations above the league average and ranks in the top 2.3% of players in rebounding.
 
-*insert table with color legend image here*
+![Heat Map with Legend](images/heatmap_with_legend.png)
 
 **Statistical Methodology**
 
@@ -142,7 +146,6 @@ The heat map uses Z-score calculations and the empirical rule to objectively ran
 |------------------|---------------|---------------------|-------|
 | Elite | Z ≥ +2.0 | Top 2.3% | Dark Green |
 | Above Average | +1.0 ≤ Z < +2.0 | Next 13.6% | Light Green |
-
 | Average | -1.0 ≤ Z < +1.0 | Middle 68.3% | Gray |
 | Below Average | -2.0 ≤ Z < -1.0 | Bottom 13.6% | Light Red |
 | Poor | Z < -2.0 | Bottom 2.3% | Dark Red |
@@ -151,7 +154,7 @@ The heat map uses Z-score calculations and the empirical rule to objectively ran
 
 ### Dashboard Page 3 - Advanced Analytics
 
-*insert NBA fantasy performance analytics image here*
+![NBA Fantasy Performance Analytics Dashboard](images/page_3_dash.png)
 
 This page of the dashboard provides users with analytical tools used to reveal relationships, patterns, and insights into NBA statistics that aren't immediately obvious from basic data. This page combines multiple visualizations that help users find trends in efficiency, consistency, performance changes, and overall statistical leaders to help users make better fantasy basketball decisions.
 
@@ -176,9 +179,9 @@ The bottom row features two scatter plots that analyze performance relationships
 
 ### Performance Optimizations
 
-**Parallel Processing**: Uses joblib to process multiple NBA games simultaneously across 4 CPU cores instead of sequential processing, reducing pipeline execution time by approximately 75% on days with 10+ games.
+**Parallel Processing**: Uses joblib to process multiple NBA games simultaneously across 4 CPU cores instead of sequential processing.
 
-**Columnar Storage**: Parquet format provides 60% better compression than CSV files and enables column-specific queries, reducing storage costs and improving query performance.
+**Columnar Storage**: Parquet format provides better compression than CSV files and enables column-specific queries, reducing storage costs and improving query performance.
 
 **Incremental Loading**: Date partitioning (year=2025/month=02/day=09) allows the pipeline to target specific date folders rather than scanning entire buckets, improving efficiency as data scales.
 
@@ -201,23 +204,9 @@ The WAP process implements enterprise-grade data validation:
 ] >> wap_part_3_publish
 ```
 
-## Repository Structure
-
-```
-├── bronze_layer_1.py          # NBA Scoreboard API extraction
-├── bronze_layer_2.py          # NBA Boxscore API extraction with parallel processing
-├── silver_layer_1.py          # Data flattening, cleaning, and BigQuery insertion
-├── dag.py                     # Complete Airflow DAG with WAP implementation
-├── sql/                       # BigQuery stored procedures
-│   ├── gold_layer/           # Business-level analytics table creation
-│   ├── audits/               # Data quality validation checks
-│   └── staging/              # WAP process stored procedures
-├── docs/                     # Project documentation and design decisions
-├── dashboards/               # Power BI files and data models
-└── README.md                 # This file
-```
-
 ## Results and Impact
+
+![Player Rankings](images/ranking.png)
 
 ### Fantasy Basketball Performance
 
@@ -226,7 +215,7 @@ Using the dashboards and z-score analysis I built, I finished ranked 33rd out of
 ### Technical Achievements
 
 * **Automated End-to-End Pipeline**: Zero manual intervention required for daily data processing
-* **Enterprise Data Quality**: WAP process ensures 100% data validation before dashboard updates
+* **Enterprise Data Quality**: WAP process ensures data validation before dashboard updates
 * **Scalable Architecture**: Handles increasing data volumes through parallel processing and cloud-native design
 * **Real-Time Analytics**: Provides next-day insights for rapid fantasy decision-making
 
