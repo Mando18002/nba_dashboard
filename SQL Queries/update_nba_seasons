@@ -1,7 +1,6 @@
 BEGIN
-    -- ========================================
+
     -- STEP 1: Calculate new data into temporary table (SAFE - doesn't touch main table)
-    -- ========================================
     CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_raw.nba_seasons_TEMP` AS
     SELECT 
         season_label,
@@ -23,21 +22,18 @@ BEGIN
     ])
     ORDER BY start_date;  -- Order seasons chronologically for easier reading
 
-    -- ========================================
+
     -- STEP 2: ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
-    -- ========================================
     -- This ensures that if anything goes wrong above, the main table stays intact
     CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_raw.nba_seasons` AS
     SELECT * FROM `nba-analytics-458520.nba_data_raw.nba_seasons_TEMP`;
 
-    -- ========================================
-    -- STEP 3: Clean up temporary table (housekeeping)
-    -- ========================================
+  
+    -- STEP 3: Clean up temporary table 
     DROP TABLE `nba-analytics-458520.nba_data_raw.nba_seasons_TEMP`;
 
-    -- ========================================
+
     -- STEP 4: Log success message
-    -- ========================================
     -- This helps with monitoring and debugging in Airflow logs
     SELECT 
         'NBA seasons reference table updated successfully' AS status,
