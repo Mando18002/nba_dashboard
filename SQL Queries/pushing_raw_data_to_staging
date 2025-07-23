@@ -1,0 +1,163 @@
+BEGIN
+
+-- This is the first step in the Write-Audit-Publish (WAP) pattern
+-- We take raw NBA data, clean it using the EXACT same transformation logic as before,
+-- and place it in a staging area where it will be validated before going to production
+
+-- Step 1: Create the staging table structure if it doesn't already exist
+-- This table has the same structure as our final clean table, plus WAP versioning columns
+CREATE TABLE IF NOT EXISTS `nba-analytics-458520.nba_data_staging.staging_area` (
+    -- WAP-specific columns for audit trail and data lineage (moved to front)
+    snapshot_timestamp TIMESTAMP,     -- Exact timestamp when processed
+    wap_batch_id STRING,               -- Unique batch identifier for this WAP run
+    snapshot_date DATE,                -- Date this data was processed
+    
+    -- Core player statistics fields (same as production table)
+    season STRING,                     -- NBA season (e.g. "2024-25")
+    game_date DATE,                    -- Date the game was played
+    game_id STRING,                    -- Unique identifier for each game
+    team_id INT64,                     -- Team identifier number
+    team_city STRING,                  -- Team city name (e.g. "Los Angeles") 
+    team_name STRING,                  -- Team name (e.g. "Lakers")
+    personId INT64,                    -- Unique player identifier
+    firstName STRING,                  -- Player's first name
+    familyName STRING,                 -- Player's last name
+    minutes FLOAT64,                   -- Minutes played (converted from MM:SS to decimal)
+    fieldGoalsMade INT64,              -- Field goals made
+    fieldGoalsAttempted INT64,         -- Field goals attempted
+    fieldGoalsPercentage FLOAT64,      -- Field goal percentage (0.0 to 1.0)
+    threePointersMade INT64,           -- Three-pointers made
+    threePointersAttempted INT64,      -- Three-pointers attempted
+    threePointersPercentage FLOAT64,   -- Three-point percentage (0.0 to 1.0)
+    freeThrowsMade INT64,              -- Free throws made
+    freeThrowsAttempted INT64,         -- Free throws attempted
+    freeThrowsPercentage FLOAT64,      -- Free throw percentage (0.0 to 1.0)
+    reboundsOffensive INT64,           -- Offensive rebounds
+    reboundsDefensive INT64,           -- Defensive rebounds
+    reboundsTotal INT64,               -- Total rebounds
+    assists INT64,                     -- Assists
+    steals INT64,                      -- Steals
+    blocks INT64,                      -- Blocks
+    turnovers INT64,                   -- Turnovers
+    foulsPersonal INT64,               -- Personal fouls
+    points INT64,                      -- Points scored
+    plusMinusPoints INT64              -- Plus/minus statistic             
+);
+
+-- Step 2: Keep all staging data for debugging purposes
+-- Unlike a temporary workspace, this staging area accumulates data over time
+-- This allows you to debug failed audits by examining the problematic data
+-- No DELETE statement - data persists until successfully published
+
+-- Step 3: Insert only NEW data that hasn't been staged yet
+-- This uses incremental loading to avoid reprocessing the same data
+-- Data stays in staging until it passes audits and gets published to production
+INSERT INTO `nba-analytics-458520.nba_data_staging.staging_area`
+
+-- This section applies all the same cleaning transformations as the original query
+-- The logic here is 100% identical - we're just changing WHERE the clean data goes
+
+SELECT 
+    -- WAP audit trail fields - track when and how this data was processed (moved to front)
+    CURRENT_TIMESTAMP() as snapshot_timestamp,                         -- Exact timestamp of processing
+    CONCAT('NBA_', FORMAT_DATE('%Y%m%d', CURRENT_DATE())) as wap_batch_id,  -- Unique batch identifier
+    CURRENT_DATE() as snapshot_date,                                    -- Date this batch was processed
+    
+    -- Season information from reference table
+    seasons.season_label as season,
+    
+    -- Game and team identification fields
+    PARSE_DATE('%Y-%m-%d', raw.game_date) as game_date,    -- Convert string date to proper DATE type
+    CAST(raw.game_id AS STRING) as game_id,                -- Ensure game_id is string type
+    CAST(raw.team_id AS INT64) as team_id,                 -- Convert team_id to integer
+    team_names.team_city as team_city,                     -- Get team city from joined team_info
+    team_names.team_name as team_name,                     -- Get team name from joined team_info
+    
+    -- Player identification fields  
+    CAST(raw.person_id AS INT64) as personId,              -- Convert player ID to integer
+    TRIM(raw.first_name) as firstName,                     -- Remove whitespace from first name
+    TRIM(raw.family_name) as familyName,                   -- Remove whitespace from last name
+    
+    -- Minutes played conversion (most complex transformation)
+    -- Raw data comes as "MM:SS" string, we convert to decimal minutes
+    CASE
+        WHEN raw.minutes IS NULL THEN 0.0                  -- Handle NULL values
+        WHEN raw.minutes = '' THEN 0.0                     -- Handle empty strings
+        ELSE 
+            -- Convert "MM:SS" format to decimal minutes
+            ROUND(
+                CAST(SPLIT(raw.minutes, ':')[0] AS INT64) +             -- Extract minutes part
+                (CAST(SPLIT(raw.minutes, ':')[1] AS INT64) / 60.0), 2   -- Convert seconds to decimal minutes
+           )
+    END as minutes,
+    
+    -- Basketball statistics - convert all to proper numeric types
+    CAST(raw.field_goals_made AS INT64) as fieldGoalsMade,
+    CAST(raw.field_goals_attempted AS INT64) as fieldGoalsAttempted,
+    CAST(raw.field_goals_percentage AS FLOAT64) as fieldGoalsPercentage,
+    CAST(raw.three_pointers_made AS INT64) as threePointersMade,
+    CAST(raw.three_pointers_attempted AS INT64) as threePointersAttempted,
+    CAST(raw.three_pointers_percentage AS FLOAT64) as threePointersPercentage,
+    CAST(raw.free_throws_made AS INT64) as freeThrowsMade,
+    CAST(raw.free_throws_attempted AS INT64) as freeThrowsAttempted,
+    CAST(raw.free_throws_percentage AS FLOAT64) as freeThrowsPercentage,
+    CAST(raw.rebounds_offensive AS INT64) as reboundsOffensive,
+    CAST(raw.rebounds_defensive AS INT64) as reboundsDefensive,
+    CAST(raw.rebounds_total AS INT64) as reboundsTotal,
+    CAST(raw.assists AS INT64) as assists,
+    CAST(raw.steals AS INT64) as steals,
+    CAST(raw.blocks AS INT64) as blocks,
+    CAST(raw.turnovers AS INT64) as turnovers,
+    CAST(raw.fouls_personal AS INT64) as foulsPersonal,
+    CAST(raw.points AS INT64) as points,
+    CAST(raw.plus_minus_points AS INT64) as plusMinusPoints
+
+
+-- This section defines where we get our data from and how we join it together
+-- Primary data source: Raw NBA game data
+FROM `nba-analytics-458520.nba_data_raw.raw_data` raw
+
+-- Join #1: Get team information (city and name) for each player's team
+-- We need this because the raw player data only has team_id, not the readable team names
+LEFT JOIN `nba-analytics-458520.nba_data_raw.raw_data` team_names
+    ON raw.game_id = team_names.game_id         -- Match on same game
+    AND raw.team_id = team_names.team_id        -- Match on same team
+    AND team_names.block_type = 'team_info'     -- Only get team info records, not player records
+
+-- Join #2: Get NBA season information based on game date
+-- This adds the season label (like "2024-25") to each game
+LEFT JOIN `nba-analytics-458520.nba_data_raw.nba_seasons` seasons
+    ON PARSE_DATE('%Y-%m-%d', raw.game_date) BETWEEN seasons.start_date AND seasons.end_date
+
+
+-- This section filters the data to only include what we want and prevents duplicate processing
+WHERE 
+    -- Filter #1: Only process player statistics (not team info, game headers, etc.)
+    raw.block_type = 'player_statistics'
+    
+    -- Filter #2: Only process YESTERDAY'S games (daily incremental processing)
+    AND PARSE_DATE('%Y-%m-%d', raw.game_date) = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
+    
+    -- Filter #3: Exclude special/exhibition games that don't have proper team info
+    AND team_names.team_city IS NOT NULL       -- Team city must exist
+    AND team_names.team_city != ''             -- Team city can't be empty
+    AND team_names.team_city != "Team"         -- Exclude generic "Team" entries
+    
+    -- Filter #4: Exclude All-Star games (these aren't regular season games)
+    AND UPPER(team_names.team_name) NOT LIKE '%ALL%STAR%'   -- Exclude All-Star in team name
+    AND UPPER(team_names.team_city) NOT LIKE '%ALL%STAR%'   -- Exclude All-Star in team city
+    
+    -- Filter #5: INCREMENTAL LOADING - Only process data that isn't already staged
+    -- This prevents reprocessing data that's already been cleaned and staged
+    AND NOT EXISTS ( 
+        SELECT 1                                                            
+        FROM `nba-analytics-458520.nba_data_staging.staging_area` staged  
+        WHERE staged.game_date = PARSE_DATE('%Y-%m-%d', raw.game_date)       -- Same game date
+        AND staged.game_id = CAST(raw.game_id AS STRING)                     -- Same game ID
+        AND staged.personId = CAST(raw.person_id AS INT64)                   -- Same player
+        AND staged.season = seasons.season_label                             -- Same season
+        AND staged.team_city = team_names.team_city                          -- Same team city
+        AND staged.team_name = team_names.team_name                          -- Same team name
+    );
+
+END
