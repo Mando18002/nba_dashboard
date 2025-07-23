@@ -1,0 +1,107 @@
+BEGIN
+
+-- This is the PRODUCTION version that only processes YESTERDAY'S games
+-- All data quality checks are handled by BigQueryCheckOperator tasks in the DAG
+-- This query only runs AFTER all audits have passed
+
+-- Step 1: Create production table structure if it doesn't exist
+-- This ensures the production table exists before we try to insert data
+CREATE TABLE IF NOT EXISTS `nba-analytics-458520.nba_data_clean.player_statistics_clean` (
+    -- WAP versioning columns for audit trail and rollback capability (same as staging)
+    snapshot_timestamp TIMESTAMP,     -- Exact timestamp when processed
+    wap_batch_id STRING,               -- Unique batch identifier for this WAP run
+    snapshot_date DATE,                -- Date this data was processed
+    
+    -- Core player statistics fields (same as staging)
+    season STRING,                     -- NBA season (e.g. "2024-25")
+    game_date DATE,                    -- Date the game was played
+    game_id STRING,                    -- Unique identifier for each game
+    team_id INT64,                     -- Team identifier number
+    team_city STRING,                  -- Team city name (e.g. "Los Angeles") 
+    team_name STRING,                  -- Team name (e.g. "Lakers")
+    personId INT64,                    -- Unique player identifier
+    firstName STRING,                  -- Player's first name
+    familyName STRING,                 -- Player's last name
+    minutes FLOAT64,                   -- Minutes played (converted from MM:SS to decimal)
+    fieldGoalsMade INT64,              -- Field goals made
+    fieldGoalsAttempted INT64,         -- Field goals attempted
+    fieldGoalsPercentage FLOAT64,      -- Field goal percentage (0.0 to 1.0)
+    threePointersMade INT64,           -- Three-pointers made
+    threePointersAttempted INT64,      -- Three-pointers attempted
+    threePointersPercentage FLOAT64,   -- Three-point percentage (0.0 to 1.0)
+    freeThrowsMade INT64,              -- Free throws made
+    freeThrowsAttempted INT64,         -- Free throws attempted
+    freeThrowsPercentage FLOAT64,      -- Free throw percentage (0.0 to 1.0)
+    reboundsOffensive INT64,           -- Offensive rebounds
+    reboundsDefensive INT64,           -- Defensive rebounds
+    reboundsTotal INT64,               -- Total rebounds
+    assists INT64,                     -- Assists
+    steals INT64,                      -- Steals
+    blocks INT64,                      -- Blocks
+    turnovers INT64,                   -- Turnovers
+    foulsPersonal INT64,               -- Personal fouls
+    points INT64,                      -- Points scored
+    plusMinusPoints INT64              -- Plus/minus statistic
+);
+
+-- Step 2: Insert ONLY YESTERDAY'S validated data from staging to production
+-- This is the daily incremental processing version
+INSERT INTO `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+
+SELECT 
+    -- WAP versioning columns from staging (for audit trail and rollback capability)
+    snapshot_timestamp,                -- Timestamp when this record was processed
+    wap_batch_id,                      -- Batch identifier from staging
+    snapshot_date,                     -- Date when this record was processed
+    
+    -- Core basketball data columns from staging
+    season,                            -- NBA season from staging
+    game_date,                         -- Game date from staging
+    game_id,                           -- Game identifier from staging
+    team_id,                           -- Team ID from staging
+    team_city,                         -- Team city name from staging
+    team_name,                         -- Team name from staging
+    personId,                          -- Player identifier from staging
+    firstName,                         -- Player first name from staging
+    familyName,                        -- Player last name from staging
+    minutes,                           -- Minutes played from staging
+    fieldGoalsMade,                    -- Field goals made from staging
+    fieldGoalsAttempted,               -- Field goals attempted from staging
+    fieldGoalsPercentage,              -- Field goal percentage from staging
+    threePointersMade,                 -- Three-pointers made from staging
+    threePointersAttempted,            -- Three-pointers attempted from staging
+    threePointersPercentage,           -- Three-point percentage from staging
+    freeThrowsMade,                    -- Free throws made from staging
+    freeThrowsAttempted,               -- Free throws attempted from staging
+    freeThrowsPercentage,              -- Free throw percentage from staging
+    reboundsOffensive,                 -- Offensive rebounds from staging
+    reboundsDefensive,                 -- Defensive rebounds from staging
+    reboundsTotal,                     -- Total rebounds from staging
+    assists,                           -- Assists from staging
+    steals,                            -- Steals from staging
+    blocks,                            -- Blocks from staging
+    turnovers,                         -- Turnovers from staging
+    foulsPersonal,                     -- Personal fouls from staging
+    points,                            -- Points scored from staging
+    plusMinusPoints                    -- Plus/minus statistic from staging
+
+-- Data source: Validated staging area (all audits have passed at this point)
+FROM `nba-analytics-458520.nba_data_staging.staging_area` staged
+
+-- Step 3: Filter for YESTERDAY'S games only (daily incremental processing)
+WHERE staged.game_date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)
+
+-- Step 4: Incremental loading - only insert records not already in production
+-- This prevents duplicate records if the publish step is re-run
+AND NOT EXISTS (
+    SELECT 1 
+    FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean` prod
+    WHERE prod.game_date = staged.game_date          -- Same game date
+      AND prod.game_id = staged.game_id              -- Same game ID
+      AND prod.personId = staged.personId            -- Same player
+      AND prod.season = staged.season                -- Same season
+      AND prod.team_city = staged.team_city          -- Same team city
+      AND prod.team_name = staged.team_name          -- Same team name
+);
+
+END
