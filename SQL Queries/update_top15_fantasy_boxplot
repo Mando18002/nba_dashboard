@@ -1,0 +1,220 @@
+BEGIN
+
+-- NBA TOP 15 FANTASY PERFORMERS BOXPLOT ANALYSIS with Temp Table Pattern
+-- This query creates a comprehensive statistical analysis for the top fantasy basketball performers
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+
+-- Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.top15_fantasy_boxplot_gold_TEMP` AS
+
+-- CALCULATE COMPREHENSIVE STATISTICS FOR EACH PLAYER-SEASON
+-- This CTE creates the foundation by calculating all the statistical measures we need
+-- We analyze each player-season combination (e.g., "Damian Lillard 2024-2025", "LeBron James 2023-2024")
+-- The key insight: We need both central tendency (averages) AND distribution measures (quartiles, variation)
+
+WITH player_season_stats AS (
+  SELECT
+    -- PLAYER IDENTIFICATION: Create clean display names for the dashboard
+    CONCAT(firstName, ' ', familyName) as full_name,
+    CONCAT(team_city, ' ', team_name) as team_name,
+    season,
+    
+    -- SAMPLE SIZE VALIDATION: Count total games to ensure statistical reliability
+    -- We need enough games to make meaningful conclusions about consistency
+    COUNT(*) as games_played,
+    
+    -- FANTASY SCORING FORMULA: Custom weighted scoring system that reflects real fantasy value
+    -- This formula mimics popular fantasy basketball scoring where different stats have different values:
+    -- - 3-pointers: 3 points (premium for outside shooting)
+    -- - 2-pointers: 2 points (standard field goals minus threes)
+    -- - Free throws: 1 point (easiest scoring method)
+    -- - Rebounds: 1.2 points (slightly premium for big men)
+    -- - Assists: 1.5 points (premium for playmaking)
+    -- - Blocks/Steals: 2 points each (premium for defensive stats - they're rare)
+    -- - Turnovers: -1 point (penalty for mistakes)
+    
+    -- SEASON AVERAGE: The most common measure - what does this player typically produce?
+    ROUND(AVG(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1)
+    ), 1) as avg_fantasy_points_per_game,
+    
+    -- FLOOR PERFORMANCE: Worst game of the season
+    -- Important for risk management - even great players have bad nights
+    MIN(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1)
+    ) as min_fantasy_points_per_game,
+    
+    -- QUARTILE ANALYSIS: This is the heart of boxplot visualization
+    -- APPROX_QUANTILES divides all of a player's games into 4 equal groups (quartiles)
+    -- Think of it like this: If a player plays 80 games, quartiles split them into 4 groups of 20 games each
+    -- The boundaries between these groups tell us about consistency and distribution
+    
+    -- Q1 (25th PERCENTILE): 25% of games were below this score, 75% were above
+    -- This represents the player's "bad game" threshold
+    ROUND(APPROX_QUANTILES(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1), 4
+    )[OFFSET(1)], 2) as q1_fantasy_points_per_game,
+    
+    -- MEDIAN (50th PERCENTILE): The middle value when all games are sorted
+    -- This is often more reliable than average because it's not affected by extreme outliers
+    -- If a player has a few monster games or terrible games, median stays stable
+    ROUND(APPROX_QUANTILES(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1), 4
+    )[OFFSET(2)], 2) as median_fantasy_points_per_game,
+    
+    -- Q3 (75th PERCENTILE): 75% of games were below this score, 25% were above
+    -- This represents the player's "good game" threshold
+    ROUND(APPROX_QUANTILES(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1), 4
+    )[OFFSET(3)], 2) as q3_fantasy_points_per_game,
+    
+    -- CEILING PERFORMANCE: Best game of the season
+    -- Shows the player's upside potential - important for understanding ceiling in daily fantasy
+    MAX(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1)
+    ) as max_fantasy_points_per_game,
+    
+    -- USAGE INDICATOR: Average minutes per game
+    -- Higher minutes usually correlate with more fantasy opportunities
+    ROUND(AVG(CAST(minutes AS FLOAT64)), 1) as avg_minutes_per_game,
+    
+    -- COEFFICIENT OF VARIATION (CV): The most important consistency metric
+    -- CV = (Standard Deviation / Average) * 100
+    -- This measures relative variability - how much a player's performance bounces around relative to their average
+    ROUND((STDDEV(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1)
+    ) / AVG(
+      (CAST(threePointersMade AS FLOAT64) * 3) +
+      ((CAST(fieldGoalsMade AS FLOAT64) - CAST(threePointersMade AS FLOAT64)) * 2) +
+      (CAST(freeThrowsMade AS FLOAT64) * 1) +
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) +
+      (CAST(assists AS FLOAT64) * 1.5) +
+      (CAST(blocks AS FLOAT64) * 2) +
+      (CAST(steals AS FLOAT64) * 2) +
+      (CAST(turnovers AS FLOAT64) * -1)
+    )), 2) as coefficient_of_variation
+    
+  FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+  -- QUALITY FILTERS: Ensure we only analyze meaningful sample sizes
+  WHERE CAST(minutes AS FLOAT64) > 1       -- Exclude DNP games (garbage time minimum)
+    AND CAST(points AS FLOAT64) >= 0       -- Sanity check for data quality
+  GROUP BY firstName, familyName, team_city, team_name, season
+  -- STATISTICAL RELIABILITY THRESHOLDS:
+  HAVING COUNT(*) >= 40                    -- Need at least 40 games for reliable quartile analysis
+    AND AVG(CAST(minutes AS FLOAT64)) >= 15 -- Need meaningful minutes (eliminates bench warmers)
+),
+
+-- RANK PLAYERS TO IDENTIFY TOP PERFORMERS
+-- We need to limit our analysis to top performers because:
+-- 1. Boxplots with 100+ players become unreadable
+-- 2. Fantasy managers care most about elite, starting-caliber players
+-- 3. Top performers have the most reliable statistics due to larger sample sizes
+
+ranked_players AS (
+  SELECT 
+    *,
+    -- RANKING WITHIN EACH SEASON: Create separate leaderboards per season
+    -- PARTITION BY season creates separate "buckets" for each year
+    -- For example: 2024-2025 bucket gets its own 1-15 ranking, 2023-2024 gets its own 1-15 ranking
+    -- ORDER BY fantasy points DESC puts the highest scorers first (rank 1 = best)
+    -- This approach accounts for scoring differences between seasons (rule changes, pace, etc.)
+    ROW_NUMBER() OVER (
+      PARTITION BY season 
+      ORDER BY avg_fantasy_points_per_game DESC
+    ) as season_rank
+  FROM player_season_stats
+)
+
+-- FINAL OUTPUT: OPTIMIZED FOR POWER BI BOXPLOT VISUALIZATION
+-- This table structure is specifically designed to create compelling boxplots that show both production AND consistency
+
+SELECT 
+  full_name,
+  team_name,
+  season,
+  games_played,
+  avg_fantasy_points_per_game,
+  min_fantasy_points_per_game,
+  q1_fantasy_points_per_game,
+  median_fantasy_points_per_game,
+  q3_fantasy_points_per_game,
+  max_fantasy_points_per_game,
+  avg_minutes_per_game,
+  coefficient_of_variation,
+  
+  -- IQR CALCULATIONS: Interquartile Range components for deeper analysis
+  -- IQR measures the spread of the middle 50% of performances
+  -- Smaller IQR = more consistent, larger IQR = more variable
+  
+  -- LOWER IQR (25th to 50th percentile): How much does the player vary in their "below median" games?
+  -- This tells us about the consistency of their floor performance
+  ROUND(median_fantasy_points_per_game - q1_fantasy_points_per_game, 1) as iqr_25_50_fantasy,
+  
+  -- UPPER IQR (50th to 75th percentile): How much does the player vary in their "above median" games?
+  -- This tells us about the consistency of their ceiling performance
+  ROUND(q3_fantasy_points_per_game - median_fantasy_points_per_game, 1) as iqr_50_75_fantasy
+
+FROM ranked_players
+-- TOP 15 FILTER: Focus on elite performers only
+-- Why 15? It's the sweet spot for boxplot readability while capturing true elite talent
+-- These are typically All-Star caliber players who fantasy managers actually target
+WHERE season_rank <= 15
+ORDER BY season DESC, avg_fantasy_points_per_game DESC;
+
+-- ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.top15_fantasy_boxplot_gold` AS
+SELECT * FROM `nba-analytics-458520.nba_data_business_level_aggregates.top15_fantasy_boxplot_gold_TEMP`;
+
+-- Clean up temporary table (housekeeping)
+DROP TABLE `nba-analytics-458520.nba_data_business_level_aggregates.top15_fantasy_boxplot_gold_TEMP`;
+
+END
