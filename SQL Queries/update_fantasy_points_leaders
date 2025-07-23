@@ -1,0 +1,53 @@
+BEGIN
+
+-- Fantasy Points Leaders Analysis with Temp Table Pattern
+-- Simple focus on total fantasy points with season grouping
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+
+-- Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.fantasy_points_leaders_gold_TEMP` AS
+
+SELECT 
+  -- Creates player's full name by using CONCAT clause
+  -- Example: "Nikola" + " " + "Jokic" = "Nikola Jokic"
+  CONCAT(firstName, ' ', familyName) as full_name,
+  -- Creates team name with the same process
+  -- Example: "Denver" + " " + "Nuggets"
+  CONCAT(team_city, ' ', team_name) as team_name,
+  -- Keeps the season info so we can filter by year later
+  -- Example: "2024-2025", "2023-2024"
+  season,
+
+  -- Counts how many games each player has played in the given season
+  COUNT(*) as games_played,
+  
+  -- Calculate total fantasy points using standard fantasy scoring:
+  -- Points (1 pt each) + Rebounds (1.2 pts each) + Assists (1.5 pts each) + 
+  -- Steals (3 pts each) + Blocks (3 pts each) - Turnovers (1 pt each)
+  ROUND(
+    SUM(
+      CAST(points AS FLOAT64) + 
+      (CAST(reboundsTotal AS FLOAT64) * 1.2) + 
+      (CAST(assists AS FLOAT64) * 1.5) + 
+      (CAST(steals AS FLOAT64) * 3.0) + 
+      (CAST(blocks AS FLOAT64) * 3.0) - 
+      CAST(turnovers AS FLOAT64)
+    ), 
+  1) as total_fantasy_points
+
+FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+-- Ensures we look at players who have actually played minutes
+WHERE CAST(minutes AS FLOAT64) > 0
+GROUP BY firstName, familyName, team_city, team_name, season
+-- Filter for players with meaningful sample size (at least 15 games played)
+HAVING COUNT(*) >= 15
+ORDER BY season DESC, total_fantasy_points DESC;
+
+-- ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.fantasy_points_leaders_gold` AS
+SELECT * FROM `nba-analytics-458520.nba_data_business_level_aggregates.fantasy_points_leaders_gold_TEMP`;
+
+-- Clean up temporary table (housekeeping)
+DROP TABLE `nba-analytics-458520.nba_data_business_level_aggregates.fantasy_points_leaders_gold_TEMP`;
+
+END
