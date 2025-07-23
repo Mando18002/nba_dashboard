@@ -1,0 +1,111 @@
+BEGIN
+
+-- Player Trend Analysis with Temp Table Pattern
+-- This analyzes player trends by comparing their last 10 games performance to their season average
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+
+-- Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_trend_analysis_gold_TEMP` AS
+
+-- First we calculate each player's season average fantasy points
+-- We use the standard fantasy scoring formula to make this comparable across all players
+-- This gives us the baseline to compare recent performance against
+WITH season_averages AS (
+  SELECT 
+    CONCAT(firstName, ' ', familyName) as full_name,
+    CONCAT(team_city, ' ', team_name) as team_name,
+    season,
+    COUNT(*) as total_games_played,
+    
+    -- Fantasy points calculation using standard scoring: 3PM=3pts, 2PM=2pts, FTM=1pt, REB=1.2pts, AST=1.5pts, BLK=2pts, STL=2pts, TO=-1pt
+    -- This formula gives us a single number that represents overall player value
+    -- We calculate this for ALL games the player has played this season to get their true baseline
+    ROUND(
+      (AVG(CAST(threePointersMade AS FLOAT64)) * 3) +                                    -- 3-pointers made worth 3 points each
+      ((AVG(CAST(fieldGoalsMade AS FLOAT64)) - AVG(CAST(threePointersMade AS FLOAT64))) * 2) +  -- 2-pointers made worth 2 points each
+      (AVG(CAST(freeThrowsMade AS FLOAT64)) * 1) +                                       -- Free throws made worth 1 point each
+      (AVG(CAST(reboundsTotal AS FLOAT64)) * 1.2) +                                      -- Total rebounds worth 1.2 points each
+      (AVG(CAST(assists AS FLOAT64)) * 1.5) +                                            -- Assists worth 1.5 points each
+      (AVG(CAST(blocks AS FLOAT64)) * 2) +                                               -- Blocks worth 2 points each
+      (AVG(CAST(steals AS FLOAT64)) * 2) +                                               -- Steals worth 2 points each
+      (AVG(CAST(turnovers AS FLOAT64)) * -1),                                            -- Turnovers subtract 1 point each
+      1
+    ) as season_avg_fantasy_points
+    
+  FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+  GROUP BY firstName, familyName, team_city, team_name, season
+),
+
+-- Now we calculate the same fantasy points but only for each player's last 10 games
+-- This shows us their recent form compared to their season-long average
+-- We use ROW_NUMBER to identify the most recent games for each player
+last_10_games AS (
+  SELECT 
+    CONCAT(firstName, ' ', familyName) as full_name,
+    CONCAT(team_city, ' ', team_name) as team_name,
+    season,
+    COUNT(*) as last_10_games_played,
+    
+    -- Same exact fantasy formula but applied only to recent games
+    -- This lets us compare apples-to-apples between season average and recent performance
+    -- The key is using the same scoring system so we can directly compare the numbers
+    ROUND(
+      (AVG(CAST(threePointersMade AS FLOAT64)) * 3) +                                    
+      ((AVG(CAST(fieldGoalsMade AS FLOAT64)) - AVG(CAST(threePointersMade AS FLOAT64))) * 2) +  
+      (AVG(CAST(freeThrowsMade AS FLOAT64)) * 1) +                                       
+      (AVG(CAST(reboundsTotal AS FLOAT64)) * 1.2) +                                      
+      (AVG(CAST(assists AS FLOAT64)) * 1.5) +                                            
+      (AVG(CAST(blocks AS FLOAT64)) * 2) +                                               
+      (AVG(CAST(steals AS FLOAT64)) * 2) +                                               
+      (AVG(CAST(turnovers AS FLOAT64)) * -1),
+      1
+    ) as last10games_avg_fantasy_points
+    
+  FROM (
+    -- Here we use ROW_NUMBER to identify each player's most recent games
+    -- PARTITION BY creates separate rankings for each player (so each player gets their own 1, 2, 3, etc.)
+    -- ORDER BY game_date DESC puts the newest games first (rank 1 = most recent game, rank 2 = second most recent, etc.)
+    -- This ensures we get each player's actual last 10 games, not just any random 10 games
+    SELECT *,
+      ROW_NUMBER() OVER (
+        PARTITION BY firstName, familyName, team_city, team_name, season 
+        ORDER BY game_date DESC
+      ) as game_rank
+    FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+  )
+  WHERE game_rank <= 10  -- Only take the 10 most recent games (ranks 1 through 10)
+  GROUP BY firstName, familyName, team_city, team_name, season
+  HAVING COUNT(*) >= 5  -- Player must have at least 5 recent games for reliable trend analysis
+)
+
+-- Final step: Join the season averages with recent performance to calculate the difference
+-- This shows us which players are trending up or down compared to their normal production
+-- The output gives us clean metrics without subjective classifications
+SELECT 
+  sa.full_name,                                                        -- Player name for display in dashboard
+  sa.team_name,                                                        -- Team name for grouping and filtering
+  sa.season_avg_fantasy_points,                                        -- Season baseline (blue bar in chart)
+  l10g.last10games_avg_fantasy_points,                                 -- Recent performance (orange bar in chart)
+  l10g.last_10_games_played,                                           -- Shows sample size (should be 5-10 games)
+  -- The key metric: difference between recent performance and season baseline
+  -- Positive numbers mean player is performing above their normal level recently
+  -- Negative numbers mean player is performing below their normal level recently
+  ROUND(l10g.last10games_avg_fantasy_points - sa.season_avg_fantasy_points, 1) as fantasy_points_change
+
+FROM season_averages sa
+INNER JOIN last_10_games l10g 
+  ON sa.full_name = l10g.full_name                                      -- Match player names between the two CTEs
+  AND sa.team_name = l10g.team_name                                     -- Match teams (this handles trades by using most recent team)
+  AND sa.season = l10g.season                                           -- Match seasons to ensure we're comparing same year data
+WHERE sa.total_games_played >= 15                                       -- Player must have played enough games for reliable season average
+  AND sa.season_avg_fantasy_points >= 10                                -- Filter out players with very low production (bench/inactive players)
+ORDER BY fantasy_points_change DESC;                                    -- Sort by biggest positive changes first (trending up players at top)
+
+-- ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_trend_analysis_gold` AS
+SELECT * FROM `nba-analytics-458520.nba_data_business_level_aggregates.player_trend_analysis_gold_TEMP`;
+
+-- Clean up temporary table 
+DROP TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_trend_analysis_gold_TEMP`;
+
+END
