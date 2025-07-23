@@ -1,0 +1,174 @@
+BEGIN
+
+-- Player Z-Score Analysis (Heat Map) with Temp Table Pattern
+-- Uses statistics (z-scores) to rank player stats objectively, removing subjectivity
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+
+-- Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_zscore_analysis_TEMP` AS
+
+-- Solution for traded players: Find most recent team using ROW_NUMBER
+-- The most notable example would be Luka Doncic, where since he got traded to another team mid-way through the season, 
+-- there would actually be 2 entries in the table. This isn't ideal at all, since when looking at a table full of ranked players, 
+-- you wouldn't want to see two of the same players with two of their teams!
+-- Ideally you'd want to see one player with their current team with ALL stats from both teams together
+
+WITH most_recent_teams AS (
+  SELECT 
+  firstName,
+  familyName,
+  season,
+  CONCAT(team_city, ' ', team_name) as team_name,
+  -- How this works is we use ROW_NUMBER that assigns a rank based on game date (newest = 1, older = 2, 3, etc.)
+  -- PARTITION BY creates a separate ranking for each player in each season
+  -- ORDER BY game_date DESC puts the most recent game first
+  -- As a result rn = 1, which therefore identifies the most recent game
+  ROW_NUMBER() OVER (PARTITION BY firstName, familyName, season ORDER BY game_date DESC) as rn
+  FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+  -- Since this matrix is basically an index, we want to include everyone EVEN those who haven't played
+  WHERE minutes >= 0  
+),
+
+-- Now in this section what we do is calculate the season averages for each player and their stats
+-- In this section we are also going to solve the issue when a player gets traded mid season
+-- IMPORTANT: This section uses two different filtering approaches:
+-- 1. Games played counter: Only counts games where player actually played (>=0.1 min)
+-- 2. Z-score population: Includes ALL roster appearances (even DNPs) for fair statistical comparisons
+player_season_averages AS (
+  SELECT
+  -- Selecting the columns we want  
+  CONCAT(p.firstName, ' ', p.familyName) as full_name,
+  -- Get team name from the JOIN (this will be the current team of the player)
+  -- So even if the player was traded, this shows where they play currently 
+  t.team_name, 
+  p.season,
+  -- Games played: Only count games where they actually played (>=0.1 minutes)
+  -- This gives accurate "games played" count while still including DNP games in averages
+  SUM(CASE WHEN p.minutes >= 0.1 THEN 1 ELSE 0 END) as games_played,
+  -- Counts all the minutes the player has across ALL roster appearances, then averages it out
+  -- This includes DNP games (0 minutes) to ensure complete season picture for Z-score calculations
+  ROUND(SUM(p.minutes) / COUNT(p.minutes), 1) as avg_minutes_per_game,
+  -- Counts all specific stats, and divides it by attempts to get the average
+  CASE 
+    WHEN SUM(p.fieldGoalsAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.fieldGoalsMade) / SUM(p.fieldGoalsAttempted), 4)
+  END as avg_fg_percentage,
+  CASE 
+    WHEN SUM(p.freeThrowsAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.freeThrowsMade) / SUM(p.freeThrowsAttempted), 4)
+  END as avg_ft_percentage,
+  CASE 
+    WHEN SUM(p.threePointersAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.threePointersMade) / SUM(p.threePointersAttempted), 4)
+  END as avg_3pt_percentage,
+  -- Find the averages for stats that don't require pre-calculation (ie percentages)
+  -- These averages include ALL roster appearances to create fair Z-score baselines
+  ROUND(AVG(p.threePointersMade), 3) as avg_three_pointers_made,
+  ROUND(AVG(p.points), 1) as avg_points,
+  ROUND(AVG(p.reboundsTotal), 1) as avg_total_rebounds,
+  ROUND(AVG(p.assists), 1) as avg_assists,
+  ROUND(AVG(p.steals), 1) as avg_steals,
+  ROUND(AVG(p.blocks), 1) as avg_blocks,
+  ROUND(AVG(p.turnovers), 1) as avg_turnovers
+-- This JOIN connects player game data with their current team info
+FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean` p  
+JOIN most_recent_teams t ON p.firstName = t.firstName           -- This matches the first name between both of the tables
+AND p.familyName = t.familyName                                 -- Match last names to avoid mixing up players
+AND p.season = t.season                                         -- Match season to get the correct year's team info
+AND t.rn = 1                                                    -- And this part only gets the most recent team
+WHERE p.minutes >= 0                                            -- Include all roster appearances (even players who have not played) to ensure we include everyone in calculation
+GROUP BY p.firstName, p.familyName, p.season, t.team_name
+),
+
+league_stats_by_season AS (
+  SELECT 
+  season,
+  -- Calculate league averages using ALL players (including those with DNP games)
+  -- This creates the most comprehensive and fair baseline for Z-score comparisons
+  AVG(avg_minutes_per_game) as league_avg_minutes,
+  AVG(avg_fg_percentage) as league_avg_fg_pct,
+  AVG(avg_ft_percentage) as league_avg_ft_pct,
+  AVG(avg_3pt_percentage) as league_avg_3pt_pct,
+  AVG(avg_three_pointers_made) as league_avg_3pm,
+  AVG(avg_points) as league_avg_points,
+  AVG(avg_total_rebounds) as league_avg_rebounds,
+  AVG(avg_assists) as league_avg_assists,
+  AVG(avg_steals) as league_avg_steals,
+  AVG(avg_blocks) as league_avg_blocks,
+  AVG(avg_turnovers) as league_avg_turnovers,
+   
+  STDDEV(avg_minutes_per_game) as league_stddev_minutes,
+  STDDEV(avg_fg_percentage) as league_stddev_fg_pct,
+  STDDEV(avg_ft_percentage) as league_stddev_ft_pct,
+  STDDEV(avg_3pt_percentage) as league_stddev_3pt_pct,
+  STDDEV(avg_three_pointers_made) as league_stddev_3pm,
+  STDDEV(avg_points) as league_stddev_points,
+  STDDEV(avg_total_rebounds) as league_stddev_rebounds,
+  STDDEV(avg_assists) as league_stddev_assists,
+  STDDEV(avg_steals) as league_stddev_steals,
+  STDDEV(avg_blocks) as league_stddev_blocks,
+  STDDEV(avg_turnovers) as league_stddev_turnovers
+   
+FROM player_season_averages
+GROUP BY season
+),
+
+main_calculations AS (
+  SELECT 
+  p.full_name,
+  p.team_name,  
+  p.season,
+  p.games_played, 
+  p.avg_minutes_per_game,
+  p.avg_fg_percentage,
+  p.avg_ft_percentage,
+  p.avg_3pt_percentage,
+  p.avg_three_pointers_made,
+  p.avg_points,
+  p.avg_total_rebounds,
+  p.avg_assists,
+  p.avg_steals,
+  p.avg_blocks,
+  p.avg_turnovers,
+  
+  -- This is where we do the z-score calculations for the stats to see how each player's stats stack up against the league average
+  ROUND((p.avg_minutes_per_game - l.league_avg_minutes) / l.league_stddev_minutes, 4) as z_score_minutes,
+  ROUND((p.avg_fg_percentage - l.league_avg_fg_pct) / l.league_stddev_fg_pct, 4) as z_score_fg_pct,
+  ROUND((p.avg_ft_percentage - l.league_avg_ft_pct) / l.league_stddev_ft_pct, 4) as z_score_ft_pct,
+  ROUND((p.avg_3pt_percentage - l.league_avg_3pt_pct) / l.league_stddev_3pt_pct, 4) as z_score_3pt_pct,
+  ROUND((p.avg_three_pointers_made - l.league_avg_3pm) / l.league_stddev_3pm, 4) as z_score_3pm,
+  ROUND((p.avg_points - l.league_avg_points) / l.league_stddev_points, 4) as z_score_points,
+  ROUND((p.avg_total_rebounds - l.league_avg_rebounds) / l.league_stddev_rebounds, 4) as z_score_rebounds,
+  ROUND((p.avg_assists - l.league_avg_assists) / l.league_stddev_assists, 4) as z_score_assists,
+  ROUND((p.avg_steals - l.league_avg_steals) / l.league_stddev_steals, 4) as z_score_steals,
+  ROUND((p.avg_blocks - l.league_avg_blocks) / l.league_stddev_blocks, 4) as z_score_blocks,
+  ROUND((p.avg_turnovers - l.league_avg_turnovers) / l.league_stddev_turnovers, 4) as z_score_turnovers,
+
+  -- We then use a weighted score based on the NBA Fantasy scoring criteria
+  -- The higher the score, determines what overall rank that player gets 
+  ROUND(
+    ((p.avg_points - l.league_avg_points) / l.league_stddev_points * 1.0) +
+    ((p.avg_total_rebounds - l.league_avg_rebounds) / l.league_stddev_rebounds * 0.8) +
+    ((p.avg_assists - l.league_avg_assists) / l.league_stddev_assists * 1.2) +
+    ((p.avg_steals - l.league_avg_steals) / l.league_stddev_steals * 0.6) +
+    ((p.avg_blocks - l.league_avg_blocks) / l.league_stddev_blocks * 0.6) +
+    ((p.avg_turnovers - l.league_avg_turnovers) / l.league_stddev_turnovers * -1.0)
+    , 4) as weighted_total_score
+
+FROM player_season_averages p
+JOIN league_stats_by_season l ON p.season = l.season
+)
+
+SELECT *,
+ROW_NUMBER() OVER (PARTITION BY season ORDER BY weighted_total_score DESC) as overall_rank
+FROM main_calculations
+ORDER BY season DESC, overall_rank ASC;
+
+-- ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_zscore_analysis` AS
+SELECT * FROM `nba-analytics-458520.nba_data_business_level_aggregates.player_zscore_analysis_TEMP`;
+
+-- Clean up temporary table (housekeeping)
+DROP TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_zscore_analysis_TEMP`;
+
+END
