@@ -1,0 +1,246 @@
+BEGIN
+
+-- Player Profile Data with Temp Table Pattern
+-- Creates player profile pages with current season stats and complete game log
+-- KPIs combine stats from ALL teams, but game log shows actual team for each game
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+
+-- STEP 1: Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_profile_data_TEMP` AS
+
+-- Get the player's current team (most recent game) for display purposes only
+-- This handles players who were traded mid-season by finding their most recent team
+WITH current_team AS (
+  SELECT 
+  firstName,
+  familyName,
+  season,
+  CONCAT(team_city, ' ', team_name) as current_team,
+  -- ROW_NUMBER assigns rank based on game date (newest = 1, older = 2, 3, etc.)
+  -- PARTITION BY creates separate ranking for each player in each season  
+  -- ORDER BY game_date DESC puts most recent game first
+  -- As a result team_rank = 1 identifies the most recent team
+  ROW_NUMBER() OVER (PARTITION BY firstName, familyName, season ORDER BY game_date DESC) as team_rank
+FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+WHERE minutes >= 0
+),
+
+-- Calculate season totals and averages for each player (COMBINING ALL TEAMS)
+-- This section solves the trade issue by combining stats from all teams into one player record
+-- The KPIs will show combined performance but display the current team name
+player_season_summary AS (
+  SELECT
+  CONCAT(p.firstName, ' ', p.familyName) as player_name,
+  p.firstName,
+  p.familyName, 
+  p.season,
+  -- Show current team but calculate stats from ALL teams
+  -- Even if player was traded, this shows where they play currently
+  t.current_team,
+   
+  -- Games played: Only count games where they actually played (>=0.1 minutes)
+  -- This gives accurate "games played" count for meaningful analysis
+  SUM(CASE WHEN p.minutes >= 0.1 THEN 1 ELSE 0 END) as games_played,
+   
+  -- Season totals (COMBINED from all teams)
+  -- These totals include performance from every team the player played for
+  SUM(p.points) as total_points,
+  SUM(p.reboundsTotal) as total_rebounds,
+  SUM(p.assists) as total_assists,
+  SUM(p.steals) as total_steals,
+  SUM(p.blocks) as total_blocks,
+  SUM(p.turnovers) as total_turnovers,
+  SUM(p.foulsPersonal) as total_fouls,
+  SUM(p.fieldGoalsMade) as total_field_goals_made,
+  SUM(p.fieldGoalsAttempted) as total_field_goals_attempted,
+  SUM(p.threePointersMade) as total_three_pointers_made,
+  SUM(p.threePointersAttempted) as total_three_pointers_attempted,
+  SUM(p.freeThrowsMade) as total_free_throws_made,
+  SUM(p.freeThrowsAttempted) as total_free_throws_attempted,
+  SUM(p.minutes) as total_minutes,
+  SUM(p.plusMinusPoints) as total_plus_minus,
+  
+  -- Season averages per game (COMBINED from all teams)
+  -- These averages include ALL roster appearances to create complete season picture
+  ROUND(AVG(p.points), 1) as avg_points_per_game,
+  ROUND(AVG(p.reboundsTotal), 1) as avg_rebounds_per_game,
+  ROUND(AVG(p.assists), 1) as avg_assists_per_game,
+  ROUND(AVG(p.steals), 1) as avg_steals_per_game,
+  ROUND(AVG(p.blocks), 1) as avg_blocks_per_game,
+  ROUND(AVG(p.turnovers), 1) as avg_turnovers_per_game,
+  ROUND(AVG(p.foulsPersonal), 1) as avg_fouls_per_game,
+  ROUND(AVG(p.minutes), 1) as avg_minutes_per_game,
+  ROUND(AVG(p.plusMinusPoints), 1) as avg_plus_minus_per_game,
+   
+  -- Shooting percentages (COMBINED from all teams)
+  -- Calculate percentages using total makes/attempts across all teams for accurate efficiency
+  CASE 
+    WHEN SUM(p.fieldGoalsAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.fieldGoalsMade) / SUM(p.fieldGoalsAttempted), 4)
+  END as field_goal_percentage,
+   
+  CASE 
+    WHEN SUM(p.threePointersAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.threePointersMade) / SUM(p.threePointersAttempted), 4)
+  END as three_point_percentage,
+   
+  CASE 
+    WHEN SUM(p.freeThrowsAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.freeThrowsMade) / SUM(p.freeThrowsAttempted), 4)
+  END as free_throw_percentage,
+   
+  -- True Shooting Percentage (COMBINED from all teams)
+  -- Uses formula: Points / (2 × (FG Attempts + 0.44 × FT Attempts)) × 100
+  -- The 0.44 factor accounts for the fact that not all free throws come from shooting fouls
+  CASE 
+    WHEN (SUM(p.fieldGoalsAttempted) + (0.44 * SUM(p.freeThrowsAttempted))) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.points) / (2 * (SUM(p.fieldGoalsAttempted) + (0.44 * SUM(p.freeThrowsAttempted)))) * 100, 4)
+  END as true_shooting_percentage
+
+FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean` p
+-- This JOIN connects player game data with their current team info
+JOIN current_team t ON p.firstName = t.firstName 
+  AND p.familyName = t.familyName                 -- Match names to avoid mixing up players
+  AND p.season = t.season                         -- Match season to get correct year's team info
+  AND t.team_rank = 1                             -- Only get the most recent team
+ 
+-- Include all roster appearances (even players who have not played) to ensure complete calculation
+WHERE p.minutes >= 0
+ 
+-- GROUP BY all players regardless of team - this combines stats from ALL teams
+-- The magic happens here: we group by player/season but combine all team data
+GROUP BY p.firstName, p.familyName, p.season, t.current_team
+),
+
+-- Get individual game logs for each player (SHOWING ACTUAL TEAM FOR EACH GAME)
+-- This section preserves the individual game details with the actual team for each game
+-- Unlike the summary above, this shows the complete trade story game by game
+player_game_log AS (
+  SELECT
+  CONCAT(p.firstName, ' ', p.familyName) as player_name,
+  p.firstName,
+  p.familyName,
+  p.season,
+  p.game_date,
+  p.game_id,
+  -- Show ACTUAL team for each individual game (not current team)
+  -- This is key: each game shows the team they actually played for that night
+  CONCAT(p.team_city, ' ', p.team_name) as game_team,
+   
+  -- Game stats for each individual game
+  p.minutes,
+  p.points,
+  p.reboundsTotal as rebounds,
+  p.assists,
+  p.steals,
+  p.blocks,
+  p.turnovers,
+  p.foulsPersonal as fouls,
+  p.fieldGoalsMade,
+  p.fieldGoalsAttempted,
+  p.fieldGoalsPercentage,
+  p.threePointersMade,
+  p.threePointersAttempted,
+  p.threePointersPercentage,
+  p.freeThrowsMade,
+  p.freeThrowsAttempted,
+  p.freeThrowsPercentage,
+  p.plusMinusPoints,
+   
+  -- Add game number for the season (1st game, 2nd game, etc.)
+  ROW_NUMBER() OVER (PARTITION BY p.firstName, p.familyName, p.season ORDER BY p.game_date) as game_number, 
+  -- Add status to show if player actually played meaningful minutes
+  CASE 
+    WHEN p.minutes >= 0.1 THEN 'Played'
+    ELSE 'Did Not Play'
+  END as game_status
+
+FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean` p
+WHERE p.minutes >= 0  -- Include all roster appearances to show complete season story
+)
+
+-- Combine season summary with game logs
+-- This final section brings together the KPI data (combined teams) with game log data (actual teams)
+SELECT
+ -- Player identification
+s.player_name,
+s.firstName,
+s.familyName,
+s.season,
+s.current_team,
+ 
+-- Season summary stats (COMBINED from all teams)
+-- These will be used for the KPI cards at the top of the dashboard
+s.games_played,
+s.total_points,
+s.total_rebounds,
+s.total_assists,
+s.total_steals,
+s.total_blocks,
+s.total_turnovers,
+s.total_fouls,
+s.total_minutes,
+s.total_plus_minus,
+ 
+-- Season averages (COMBINED from all teams)  
+-- These will populate the main performance metrics
+s.avg_points_per_game,
+s.avg_rebounds_per_game,
+s.avg_assists_per_game,
+s.avg_steals_per_game,
+s.avg_blocks_per_game,
+s.avg_turnovers_per_game,
+s.avg_fouls_per_game,
+s.avg_minutes_per_game,
+s.avg_plus_minus_per_game,
+ 
+-- Season shooting percentages (COMBINED from all teams)
+-- These will be used for the gauge charts showing shooting efficiency
+s.field_goal_percentage,
+s.three_point_percentage,
+s.free_throw_percentage,
+s.true_shooting_percentage,
+ 
+-- Individual game data (ACTUAL team for each game)
+-- These will populate the detailed game log table showing complete trade history
+g.game_date,
+g.game_id,
+g.game_team,  -- This shows the ACTUAL team for that specific game
+g.game_number,
+g.game_status,
+g.minutes as game_minutes,
+g.points as game_points,
+g.rebounds as game_rebounds,
+g.assists as game_assists,
+g.steals as game_steals,
+g.blocks as game_blocks,
+g.turnovers as game_turnovers,
+g.fouls as game_fouls,
+g.fieldGoalsMade as game_field_goals_made,
+g.fieldGoalsAttempted as game_field_goals_attempted,
+g.fieldGoalsPercentage as game_field_goal_percentage,
+g.threePointersMade as game_three_pointers_made,
+g.threePointersAttempted as game_three_pointers_attempted,
+g.threePointersPercentage as game_three_point_percentage,
+g.freeThrowsMade as game_free_throws_made,
+g.freeThrowsAttempted as game_free_throws_attempted,
+g.freeThrowsPercentage as game_free_throw_percentage,
+g.plusMinusPoints as game_plus_minus
+
+FROM player_season_summary s
+LEFT JOIN player_game_log g ON s.firstName = g.firstName 
+  AND s.familyName = g.familyName 
+  AND s.season = g.season
+
+-- Order by season first (newest first), then player name, then game date
+-- This makes filtering by season and player efficient for dashboard use
+ORDER BY s.season DESC, s.player_name, g.game_date;
+
+-- ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_profile_data` AS
+SELECT * FROM `nba-analytics-458520.nba_data_business_level_aggregates.player_profile_data_TEMP`;
+
+-- Clean up temporary table (housekeeping)
+DROP TABLE `nba-analytics-458520.nba_data_business_level_aggregates.player_profile_data_TEMP`;
+
+END
