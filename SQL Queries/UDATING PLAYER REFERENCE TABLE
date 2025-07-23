@@ -1,0 +1,39 @@
+BEGIN
+
+-- Creates a lookup table of all players, their teams, and seasons
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+-- Now reads from the NEW WAP production table location
+
+-- STEP 1: Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_clean.player_reference_table_TEMP` AS
+SELECT DISTINCT
+    -- Player identification
+    CONCAT(firstName, ' ', familyName) as full_name,      -- Create full player name
+    firstName,                                            -- Keep separate first name
+    familyName,                                           -- Keep separate last name
+    personId,                                             -- Keep unique player ID for joins
+    
+    -- Team identification  
+    CONCAT(team_city, ' ', team_name) as team_full_name,  -- Create full team name
+    team_city,                                            -- Keep separate team city
+    team_name,                                            -- Keep separate team name
+    team_id,                                              -- Keep team ID for joins
+    
+    -- Season information
+    season,                                               -- NBA season (e.g. "2024-25")
+    
+    -- Data lineage tracking (from WAP process)
+    snapshot_date,                                        -- When this data was processed
+    wap_batch_id                                          -- Which WAP batch this came from
+
+FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`    -- NEW: WAP production table
+ORDER BY full_name, season DESC;
+
+-- STEP 2: ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_clean.player_reference_table` AS
+SELECT * FROM `nba-analytics-458520.nba_data_clean.player_reference_table_TEMP`;
+
+-- STEP 3: Clean up temporary table (housekeeping)
+DROP TABLE `nba-analytics-458520.nba_data_clean.player_reference_table_TEMP`;
+
+END
