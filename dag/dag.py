@@ -6,10 +6,15 @@ import google.auth.transport.requests
 from google.auth.transport.requests import AuthorizedSession
 from datetime import datetime, timedelta
 
+from plugins import *
+
 # Bronze layer endpoints (same as your existing DAG)
 BRONZE_LAYER_1_URL = "CLOUD_FUNCTION_URL_1"
 BRONZE_LAYER_2_URL = "CLOUD_FUNCTION_URL_2"
 SILVER_LAYER_1_URL = "CLOUD_FUNCTION_URL_3"
+
+#get_nba_scoreboard(**kwargs)
+#get_nba_boxscores(**kwargs)
 
 # Same functions as your existing DAG - no changes needed here
 def invoke_bronze_layer_1():

@@ -7,6 +7,8 @@ import io
 import os
 import time
 
+from constants import username, password, port, bucket_name
+
 def get_nba_scoreboard(request):
     """ This function acts as the Cloud Functions entry point to extract NBA data from the API and store it in GCS.
         It extracts yesterday's scoreboard data, loads it into a pandas dataframe, converts it into a Parquet format,
@@ -28,16 +30,6 @@ def get_nba_scoreboard(request):
             - PROXY_PORT: Port for the SmartProxy service 
             - BUCKET_NAME: GCS bucket name 
     """
-    
-    # Setting up proxy configuration to bypass API's restrictions on requests from cloud services
-    username = os.environ.get("PROXY_USERNAME")
-    password = os.environ.get("PROXY_PASSWORD")
-    port = os.environ.get("PROXY_PORT")
-    proxy = f"http://{username}:{password}@gate.smartproxy.com:{port}"
-    proxies = {
-        "http": proxy,
-        "https": proxy
-    }
     
     # Creates a dictionary of HTTP headers to mimic a real browers request, rather than an automated one (CloudServices)
     headers = {

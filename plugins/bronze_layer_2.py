@@ -8,6 +8,9 @@ import os
 import time
 from joblib import Parallel, delayed
 
+from constants import username, password, port, bucket_name
+
+
 # Creating a class to encapsualte the logic to process data from the BoxscoreTraditionalV3 endpoint
 class NBABoxscoreProcessor:
     # We use the special class __init__ in order to avoid a pickling problem when using joblib when trying to do parallel processing
