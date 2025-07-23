@@ -1,0 +1,49 @@
+BEGIN
+    -- ========================================
+    -- STEP 1: Calculate new data into temporary table (SAFE - doesn't touch main table)
+    -- ========================================
+    CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_raw.nba_seasons_TEMP` AS
+    SELECT 
+        season_label,
+        -- Convert hardcoded date strings into proper DATE values
+        PARSE_DATE('%Y-%m-%d', start_date) AS start_date,
+        PARSE_DATE('%Y-%m-%d', end_date) AS end_date
+
+    -- Create season data using UNNEST and STRUCT for all NBA seasons we need
+    -- The square brackets create an array containing all season data
+    -- STRUCT creates rows with the appropriate column names
+    FROM UNNEST([
+        STRUCT('2018-2019' AS season_label, '2018-10-16' AS start_date, '2019-06-13' AS end_date),
+        STRUCT('2019-2020' AS season_label, '2019-10-22' AS start_date, '2020-10-11' AS end_date),
+        STRUCT('2020-2021' AS season_label, '2020-12-22' AS start_date, '2021-07-20' AS end_date),
+        STRUCT('2021-2022' AS season_label, '2021-10-19' AS start_date, '2022-06-16' AS end_date),
+        STRUCT('2022-2023' AS season_label, '2022-10-18' AS start_date, '2023-06-12' AS end_date),
+        STRUCT('2023-2024' AS season_label, '2023-10-24' AS start_date, '2024-06-17' AS end_date),
+        STRUCT('2024-2025' AS season_label, '2024-10-22' AS start_date, '2025-06-22' AS end_date)
+    ])
+    ORDER BY start_date;  -- Order seasons chronologically for easier reading
+
+    -- ========================================
+    -- STEP 2: ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+    -- ========================================
+    -- This ensures that if anything goes wrong above, the main table stays intact
+    CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_raw.nba_seasons` AS
+    SELECT * FROM `nba-analytics-458520.nba_data_raw.nba_seasons_TEMP`;
+
+    -- ========================================
+    -- STEP 3: Clean up temporary table (housekeeping)
+    -- ========================================
+    DROP TABLE `nba-analytics-458520.nba_data_raw.nba_seasons_TEMP`;
+
+    -- ========================================
+    -- STEP 4: Log success message
+    -- ========================================
+    -- This helps with monitoring and debugging in Airflow logs
+    SELECT 
+        'NBA seasons reference table updated successfully' AS status,
+        COUNT(*) AS total_seasons,
+        MIN(start_date) AS earliest_season_start,
+        MAX(end_date) AS latest_season_end
+    FROM `nba-analytics-458520.nba_data_raw.nba_seasons`;
+
+END
