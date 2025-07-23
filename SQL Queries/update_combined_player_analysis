@@ -1,0 +1,163 @@
+BEGIN
+
+-- Combined Player Analysis (Dual Scatter Plots) with Temp Table Pattern
+-- Creates scatter plot visualizations analyzing player performance through two different lenses:
+-- 1. Volume vs Efficiency (shooting attempts vs field goal percentage)
+-- 2. Fantasy Production vs Playing Time (fantasy points per minute vs minutes played)
+-- Uses atomic operations to ensure the main table never gets destroyed if something fails
+
+-- STEP 1: Calculate new data into temporary table (SAFE - doesn't touch main table)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.combined_player_analysis_gold_TEMP` AS
+
+-- Just like the heat matrix, we need to solve the trade problem first
+-- When players get traded mid-season, we want to show their current team with complete season stats
+-- The most notable example would be Luka Doncic, where we want one entry showing his current team
+-- but with statistics from both teams combined
+-- My solution to this problem was to use ROW_NUMBER to find the most recent team, based on the game dates
+WITH most_recent_teams AS (
+  SELECT 
+  firstName,
+  familyName,
+  season,
+  CONCAT(team_city, ' ', team_name) as team_name,
+  -- How this works is we use ROW_NUMBER that assigns a rank based on game date (newest = 1, older = 2, 3, etc.)
+  -- PARTITION BY creates a separate ranking for each player in each season
+  -- ORDER BY game_date DESC puts the most recent game first
+  -- As a result rn = 1, which therefore identifies the most recent team
+  ROW_NUMBER() OVER (PARTITION BY firstName, familyName, season ORDER BY game_date DESC) as rn
+  FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean`
+  -- Since these scatter plots are for analysis, we want to include everyone EVEN those who haven't played
+  WHERE minutes >= 0  
+),
+
+-- In this section we are also going to solve the issue when a player gets traded mid season
+-- IMPORTANT: This section uses two different filtering approaches:
+-- 1. Games played counter: Only counts games where player actually played (>=0.1 min)
+-- 2. Z-score population: Includes ALL roster appearances (even DNPs) for fair statistical comparisons
+player_stats AS (
+ SELECT 
+  -- Selecting the columns we want
+  CONCAT(p.firstName, ' ', p.familyName) as full_name,
+  -- Get team name from the JOIN (this will be the current team of the player)
+  -- So even if the player was traded, this shows where they play currently
+  t.team_name,
+  p.season,
+  -- Games played: Only count games where they actually played (>=0.1 minutes)
+  -- This gives accurate "games played" count while still including DNP games in averages
+  SUM(CASE WHEN p.minutes >= 0.1 THEN 1 ELSE 0 END) as games_played,
+   
+  -- LEFT SCATTER PLOT: Volume vs Efficiency Analysis
+  -- X-axis: Shot attempts per game (measures shooting volume)
+  ROUND(AVG(p.fieldGoalsAttempted), 2) as avg_fga_per_game,
+  -- Y-axis: Field goal percentage (measures shooting efficiency)
+  -- Using correct percentage calculation: total makes / total attempts instead of averaging percentages
+  CASE 
+    WHEN SUM(p.fieldGoalsAttempted) = 0 THEN 0.0
+    ELSE ROUND(SUM(p.fieldGoalsMade) / SUM(p.fieldGoalsAttempted), 3)
+  END as avg_fg_percentage,
+  -- Supporting metric: Points per game for additional context
+  ROUND(AVG(p.points), 1) as avg_points_per_game,
+
+  -- RIGHT SCATTER PLOT: Fantasy Production vs Playing Time Analysis  
+  -- X-axis: Minutes per game (measures playing time/opportunity)
+  ROUND(AVG(p.minutes), 1) as avg_minutes_per_game,
+  -- Y-axis calculation step 1: Total fantasy points per game using standard fantasy scoring
+  -- 3PM=3pts, 2PM=2pts, FTM=1pt, REB=1.2pts, AST=1.5pts, BLK=2pts, STL=2pts, TO=-1pt
+  ROUND(
+    (AVG(p.threePointersMade) * 3) +                                    
+    ((AVG(p.fieldGoalsMade) - AVG(p.threePointersMade)) * 2) +  
+    (AVG(p.freeThrowsMade) * 1) +                                       
+    (AVG(p.reboundsTotal) * 1.2) +                                      
+    (AVG(p.assists) * 1.5) +                                            
+    (AVG(p.blocks) * 2) +                                               
+    (AVG(p.steals) * 2) +                                               
+    (AVG(p.turnovers) * -1),
+    1
+  ) as avg_fantasy_points_per_game,
+  -- Y-axis: Fantasy points per minute (measures fantasy efficiency)
+  -- This shows how much fantasy value a player produces per minute of playing time
+  ROUND(
+    (
+      (AVG(p.threePointersMade) * 3) +                                    
+      ((AVG(p.fieldGoalsMade) - AVG(p.threePointersMade)) * 2) +  
+      (AVG(p.freeThrowsMade) * 1) +                                       
+      (AVG(p.reboundsTotal) * 1.2) +                                      
+      (AVG(p.assists) * 1.5) +                                            
+      (AVG(p.blocks) * 2) +                                               
+      (AVG(p.steals) * 2) +                                               
+      (AVG(p.turnovers) * -1)
+    ) / NULLIF(AVG(p.minutes), 0),
+    3
+  ) as fantasy_points_per_minute
+
+  -- This JOIN connects player game data with their current team info
+  FROM `nba-analytics-458520.nba_data_clean.player_statistics_clean` p
+  JOIN most_recent_teams t ON p.firstName = t.firstName           -- This matches the first name between both tables
+  AND p.familyName = t.familyName        -- Match last names to avoid mixing up players  
+  AND p.season = t.season                -- Match season to get the correct year's team info
+  AND t.rn = 1                           -- And this part only gets the most recent team
+  -- Include all roster appearances (even DNPs) for complete Z-score population
+  -- This ensures Z-scores compare against the full NBA population, not just active players
+  WHERE p.minutes >= 0
+  GROUP BY p.firstName, p.familyName, p.season, t.team_name
+  ),
+
+-- Now we calculate Z-scores to determine how each player compares to the league average
+-- Z-score formula: (individual_value - population_mean) / population_standard_deviation
+-- The OVER() clause is key here - it calculates league-wide statistics across ALL players
+-- This creates fair categories for color-coding the scatter plots
+z_score_calculations AS (
+ SELECT *,
+  -- LEFT SCATTER PLOT: Z-Score calculation for field goal percentage
+  -- AVG(avg_fg_percentage) OVER() = calculates league average FG% across all players
+  -- STDDEV(avg_fg_percentage) OVER() = calculates league standard deviation for FG%
+  -- OVER() means "calculate this statistic across the entire result set"
+  -- This determines the color category for shooting efficiency on the volume vs efficiency plot
+  ROUND(
+    (avg_fg_percentage - AVG(avg_fg_percentage) OVER()) / 
+    NULLIF(STDDEV(avg_fg_percentage) OVER(), 0), 2) as fg_percentage_z_score,
+  -- RIGHT SCATTER PLOT: Z-Score calculation for fantasy points per minute  
+  -- AVG(fantasy_points_per_minute) OVER() = calculates league average fantasy efficiency
+  -- STDDEV(fantasy_points_per_minute) OVER() = calculates league standard deviation for fantasy efficiency
+  -- NULLIF protects against division by zero if all players had identical fantasy efficiency
+  -- This determines the color category for fantasy efficiency on the production vs time plot
+  ROUND(
+    (fantasy_points_per_minute - AVG(fantasy_points_per_minute) OVER()) / 
+    NULLIF(STDDEV(fantasy_points_per_minute) OVER(), 0), 2) as fantasy_efficiency_z_score
+FROM player_stats
+)
+
+-- Final output with Z-score based categories for color-coding scatter plots
+SELECT *,
+  -- LEFT SCATTER PLOT: Z-Score based shooting efficiency categories
+  -- These categories determine point colors on the volume vs efficiency scatter plot
+  CASE
+    WHEN fg_percentage_z_score >= 2.0 THEN 'Excellent'      -- Top 2.3% of shooters
+    WHEN fg_percentage_z_score >= 1.0 THEN 'Above Average'  -- Next 13.6% of shooters
+    WHEN fg_percentage_z_score >= -1.0 THEN 'Average'       -- Middle 68.2% of shooters
+    WHEN fg_percentage_z_score >= -2.0 THEN 'Below Average' -- Next 13.6% of shooters
+    ELSE 'Extreme Low'                                       -- Bottom 2.3% of shooters
+  END as efficiency_category,
+
+  -- RIGHT SCATTER PLOT: Z-Score based fantasy efficiency categories
+  -- These categories determine point colors on the production vs time scatter plot
+  CASE
+    WHEN fantasy_efficiency_z_score >= 2.0 THEN 'Excellent'      -- Top 2.3% fantasy efficiency
+    WHEN fantasy_efficiency_z_score >= 1.0 THEN 'Above Average'  -- Next 13.6% fantasy efficiency
+    WHEN fantasy_efficiency_z_score >= -1.0 THEN 'Average'       -- Middle 68.2% fantasy efficiency
+    WHEN fantasy_efficiency_z_score >= -2.0 THEN 'Below Average' -- Next 13.6% fantasy efficiency
+    ELSE 'Extreme Low'                                            -- Bottom 2.3% fantasy efficiency
+  END as fantasy_efficiency_category
+
+FROM z_score_calculations
+-- Sort by volume first (high shot takers), then by fantasy efficiency
+ORDER BY avg_fga_per_game DESC, fantasy_points_per_minute DESC;
+
+-- ONLY if temp table creation succeeded, replace the main table (ATOMIC OPERATION)
+CREATE OR REPLACE TABLE `nba-analytics-458520.nba_data_business_level_aggregates.combined_player_analysis_gold` AS
+SELECT * FROM `nba-analytics-458520.nba_data_business_level_aggregates.combined_player_analysis_gold_TEMP`;
+
+-- Clean up temporary table (housekeeping)
+DROP TABLE `nba-analytics-458520.nba_data_business_level_aggregates.combined_player_analysis_gold_TEMP`;
+
+END
